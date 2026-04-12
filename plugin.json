@@ -76,6 +76,48 @@
       "label": "Match cache TTL in days (0 = never expire)",
       "type": "number",
       "default": 7
+    },
+    {
+      "id": "normalize_channel_names",
+      "label": "Normalize channel names before matching",
+      "type": "boolean",
+      "default": false,
+      "helper_text": "Enable to clean up channel names before logo matching. Configure individual rules below."
+    },
+    {
+      "id": "normalize_strip_unicode",
+      "label": "Strip unicode special characters (², ³, ʀᴀᴡ, etc.)",
+      "type": "boolean",
+      "default": true,
+      "helper_text": "Remove superscripts, subscripts, and small-caps unicode characters."
+    },
+    {
+      "id": "normalize_strip_raw",
+      "label": "Strip 'raw' from quality tags (HDraw → HD)",
+      "type": "boolean",
+      "default": true,
+      "helper_text": "Remove 'raw' suffix from quality indicators like HDraw, FHDraw, UHDraw."
+    },
+    {
+      "id": "normalize_strip_provider_info",
+      "label": "Strip provider-specific info (Cable, Sat, etc.)",
+      "type": "boolean",
+      "default": true,
+      "helper_text": "Remove provider identifiers like Cable, Sat, Kabel that are not part of the channel name."
+    },
+    {
+      "id": "normalize_strip_quality_extras",
+      "label": "Strip extra quality descriptors (Low, FHD+, etc.)",
+      "type": "boolean",
+      "default": true,
+      "helper_text": "Remove extra quality descriptors like Low, Plus (when after a quality tag), FHD+."
+    },
+    {
+      "id": "normalize_custom_patterns",
+      "label": "Custom normalization patterns (one regex per line)",
+      "type": "textarea",
+      "default": null,
+      "helper_text": "Advanced: custom regex patterns to remove from channel names. One pattern per line, applied in order."
     }
   ],
   "actions": [
