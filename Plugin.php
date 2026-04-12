@@ -157,6 +157,10 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
 
     /**
      * Entry point for the manual enrich_logos action.
+     *
+     * Accepts optional overrides for overwrite_existing, skip_vod, and
+     * ignore_cache so the user can control these per run without changing
+     * the global plugin settings.
      */
     private function enrichFromAction(array $payload, PluginExecutionContext $context): PluginActionResult
     {
@@ -166,19 +170,36 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
             return PluginActionResult::failure('Missing playlist_id in action payload.');
         }
 
-        return $this->processPlaylist($playlistId, $context);
+        $overrides = [];
+
+        if (array_key_exists('overwrite_existing', $payload)) {
+            $overrides['overwrite_existing'] = (bool) $payload['overwrite_existing'];
+        }
+
+        if (array_key_exists('skip_vod', $payload)) {
+            $overrides['skip_vod'] = (bool) $payload['skip_vod'];
+        }
+
+        if (array_key_exists('ignore_cache', $payload)) {
+            $overrides['ignore_cache'] = (bool) $payload['ignore_cache'];
+        }
+
+        return $this->processPlaylist($playlistId, $context, $overrides);
     }
 
     /**
      * Core enrichment logic — queries channels for the given playlist and attempts
      * to match each one against a logo from the tv-logo/tv-logos CDN.
+     *
+     * @param  array{overwrite_existing?: bool, skip_vod?: bool, ignore_cache?: bool}  $overrides
      */
-    private function processPlaylist(int $playlistId, PluginExecutionContext $context): PluginActionResult
+    private function processPlaylist(int $playlistId, PluginExecutionContext $context, array $overrides = []): PluginActionResult
     {
         $settings = $context->settings;
         $countryCode = strtolower(trim((string) ($settings['country_code'] ?? 'us')));
-        $overwriteExisting = (bool) ($settings['overwrite_existing'] ?? false);
-        $skipVod = (bool) ($settings['skip_vod'] ?? true);
+        $overwriteExisting = (bool) ($overrides['overwrite_existing'] ?? $settings['overwrite_existing'] ?? false);
+        $skipVod = (bool) ($overrides['skip_vod'] ?? $settings['skip_vod'] ?? true);
+        $ignoreCache = (bool) ($overrides['ignore_cache'] ?? false);
         $cacheTtlDays = (int) ($settings['cache_ttl_days'] ?? 7);
         $isDryRun = $context->dryRun;
 
@@ -247,6 +268,7 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
         $matched = 0;
         $cacheHits = 0;
         $cacheMisses = 0;
+        $unmatched = [];
 
         foreach ($channels as $i => $channel) {
             $displayName = trim((string) ($channel->title_custom ?? $channel->title ?? $channel->name_custom ?? $channel->name ?? ''));
@@ -257,7 +279,7 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
 
             $cacheKey = $countryCode.':'.mb_strtolower($displayName, 'UTF-8');
 
-            if (array_key_exists($cacheKey, $cache['matches'])) {
+            if (! $ignoreCache && array_key_exists($cacheKey, $cache['matches'])) {
                 $logoUrl = $cache['matches'][$cacheKey] ?: null;
                 $cacheHits++;
             } else {
@@ -274,6 +296,9 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
                 if (! $isDryRun) {
                     Channel::where('id', $channel->id)->update(['logo' => $logoUrl]);
                 }
+            } else {
+                $unmatched[] = $displayName;
+                $context->info("Unmatched: \"{$displayName}\"");
             }
 
             if (($i + 1) % 20 === 0) {
@@ -285,16 +310,22 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
             $this->saveCache($cache);
         }
 
+        $resultData = [
+            'matched' => $matched,
+            'total' => $total,
+            'cache_hits' => $cacheHits,
+            'cache_misses' => $cacheMisses,
+            'country_code' => $countryCode,
+            'dry_run' => $isDryRun,
+        ];
+
+        if ($unmatched !== []) {
+            $resultData['unmatched'] = $unmatched;
+        }
+
         return PluginActionResult::success(
             sprintf('%d of %d channel(s) matched%s.', $matched, $total, $isDryRun ? ' (dry run — no changes written)' : ''),
-            [
-                'matched' => $matched,
-                'total' => $total,
-                'cache_hits' => $cacheHits,
-                'cache_misses' => $cacheMisses,
-                'country_code' => $countryCode,
-                'dry_run' => $isDryRun,
-            ]
+            $resultData
         );
     }
 

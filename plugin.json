@@ -98,6 +98,24 @@
           "label_attribute": "name",
           "scope": "owned",
           "required": true
+        },
+        {
+          "id": "overwrite_existing",
+          "label": "Overwrite channels that already have a logo",
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "id": "skip_vod",
+          "label": "Skip VOD channels",
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "id": "ignore_cache",
+          "label": "Ignore cache (force fresh lookups)",
+          "type": "boolean",
+          "default": false
         }
       ]
     }
