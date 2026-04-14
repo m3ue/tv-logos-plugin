@@ -734,7 +734,7 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
         // 3. Strip provider / transport terms (configurable list, one term per line in settings)
         if ($config['strip_provider_info'] && $config['provider_terms'] !== []) {
             $escapedTerms = array_map(fn (string $t): string => preg_quote($t, '/'), $config['provider_terms']);
-            $name = (string) preg_replace('/\b(' . implode('|', $escapedTerms) . ')\b/iu', '', $name);
+            $name = (string) preg_replace('/\b('.implode('|', $escapedTerms).')\b/iu', '', $name);
         }
 
         // 4. Strip extra quality descriptors that follow a quality tag
