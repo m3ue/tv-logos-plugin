@@ -19,6 +19,8 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
 
     private const CACHE_FILE = 'plugin-data/tv-logos/matches.json';
 
+    private const LOG_BATCH_SIZE = 100;
+
     private string $cdnBase;
 
     private string $indexApiBase;
@@ -232,6 +234,8 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
             $context->info('Logo index unavailable — falling back to per-channel CDN HEAD checks (slower).');
         }
 
+        $byBasename = $this->buildBasenameIndex($index);
+
         $query = Channel::query()
             ->where('playlist_id', $playlistId)
             ->where('enabled', true)
@@ -267,17 +271,22 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
         ));
 
         $matched = 0;
+        $unmatched = 0;
         $cacheHits = 0;
         $cacheMisses = 0;
-        $unmatched = [];
+        $processed = 0;
+        $batchMatched = [];
+        $batchUnmatched = [];
+        $batchStart = 1;
 
-        foreach ($channels as $i => $channel) {
+        foreach ($channels as $channel) {
             $displayName = trim((string) ($channel->title_custom ?? $channel->title ?? $channel->name_custom ?? $channel->name ?? ''));
 
             if ($displayName === '') {
                 continue;
             }
 
+            $processed++;
             $normalizedName = $this->normalizeChannelName($displayName, $normConfig);
             $cacheKey = $countryCode.':'.mb_strtolower($normalizedName, 'UTF-8');
 
@@ -285,7 +294,7 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
                 $logoUrl = $cache['matches'][$cacheKey] ?: null;
                 $cacheHits++;
             } else {
-                $logoUrl = $this->resolveLogoUrl($normalizedName, $countryCode, $countryFolder, $index);
+                $logoUrl = $this->resolveLogoUrl($normalizedName, $countryCode, $countryFolder, $index, $byBasename);
                 $cache['matches'][$cacheKey] = $logoUrl ?? '';
                 $cacheChanged = true;
                 $cacheMisses++;
@@ -293,17 +302,34 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
 
             if ($logoUrl !== null) {
                 $matched++;
+                $batchMatched[$displayName] = $logoUrl;
 
                 if (! $isDryRun && ($channel->logo ?? '') !== $logoUrl) {
                     Channel::where('id', $channel->id)->update(['logo' => $logoUrl]);
                 }
             } else {
-                $unmatched[] = $displayName;
+                $unmatched++;
+                $batchUnmatched[] = $displayName;
             }
 
-            if (($i + 1) % 20 === 0) {
-                $context->heartbeat(progress: (int) ((($i + 1) / $total) * 100));
+            if ($processed % self::LOG_BATCH_SIZE === 0) {
+                $context->info(
+                    sprintf('Channels %d–%d: %d matched, %d unmatched.', $batchStart, $processed, \count($batchMatched), \count($batchUnmatched)),
+                    ['matched' => $batchMatched, 'unmatched' => $batchUnmatched],
+                );
+                $batchMatched = [];
+                $batchUnmatched = [];
+                $batchStart = $processed + 1;
+                $context->heartbeat(progress: (int) (($processed / $total) * 100));
             }
+        }
+
+        // Flush the final partial batch.
+        if ($batchMatched !== [] || $batchUnmatched !== []) {
+            $context->info(
+                sprintf('Channels %d–%d: %d matched, %d unmatched.', $batchStart, $processed, \count($batchMatched), \count($batchUnmatched)),
+                ['matched' => $batchMatched, 'unmatched' => $batchUnmatched],
+            );
         }
 
         if ($cacheChanged && ! $isDryRun) {
@@ -312,6 +338,7 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
 
         $resultData = [
             'matched' => $matched,
+            'unmatched' => $unmatched,
             'total' => $total,
             'cache_hits' => $cacheHits,
             'cache_misses' => $cacheMisses,
@@ -319,10 +346,6 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
             'dry_run' => $isDryRun,
             'ignore_cache' => $ignoreCache,
         ];
-
-        if ($unmatched !== []) {
-            $resultData['unmatched'] = $unmatched;
-        }
 
         return PluginActionResult::success(
             sprintf('%d of %d channel(s) matched%s.', $matched, $total, $isDryRun ? ' (dry run — no changes written)' : ''),
@@ -338,9 +361,10 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
      * HD subfolders for HD-hinted channels.
      * Falls back to sequential CDN HEAD checks only when the index is unavailable.
      *
-     * @param  array<string, true>  $index  Filename → true map; empty array triggers HEAD fallback.
+     * @param  array<string, true>  $index       Filename → true map; empty array triggers HEAD fallback.
+     * @param  array<string, list<string>>  $byBasename  Pre-built basename lookup (built once per run).
      */
-    private function resolveLogoUrl(string $channelName, string $countryCode, string $countryFolder, array $index): ?string
+    private function resolveLogoUrl(string $channelName, string $countryCode, string $countryFolder, array $index, array $byBasename): ?string
     {
         $slugs = array_values(array_unique(array_filter([
             $this->slugify($channelName, false),
@@ -355,7 +379,7 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
 
         // When an index is available, search all subfolders by basename for best match.
         if ($index !== []) {
-            $result = $this->resolveFromIndex($filenames, $channelName, $countryFolder, $index);
+            $result = $this->resolveFromIndex($filenames, $channelName, $countryFolder, $byBasename);
 
             if ($result !== null) {
                 return $result;
@@ -380,27 +404,40 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
     }
 
     /**
-     * Resolve a logo URL by searching the pre-fetched index across ALL subfolders.
+     * Build a basename → [relativePaths…] lookup from the index.
      *
-     * Builds a basename lookup from the index so that files in nested subfolders
-     * like sky-sport/hd/ or custom/hd/ are found regardless of folder structure.
-     * When multiple paths match the same filename, prefers HD subfolders for
-     * HD-hinted channels.
+     * Called once per run so that resolveFromIndex() can search by filename
+     * without iterating the full index on every channel.
      *
-     * @param  array<int, string>  $filenames
      * @param  array<string, true>  $index
+     * @return array<string, list<string>>
      */
-    private function resolveFromIndex(array $filenames, string $channelName, string $countryFolder, array $index): ?string
+    private function buildBasenameIndex(array $index): array
     {
-        $hdPreferred = (bool) preg_match('/\b(hd|fhd|uhd|4k|8k|1080[pi]|720p)\b/iu', $channelName);
-
-        // Build a basename → [relativePaths…] lookup for efficient searching.
         $byBasename = [];
 
         foreach ($index as $relativePath => $_) {
             $bn = strtolower(basename($relativePath));
             $byBasename[$bn][] = $relativePath;
         }
+
+        return $byBasename;
+    }
+
+    /**
+     * Resolve a logo URL by searching the pre-fetched index across ALL subfolders.
+     *
+     * Uses a pre-built basename lookup so that files in nested subfolders like
+     * sky-sport/hd/ or custom/hd/ are found regardless of folder structure.
+     * When multiple paths match the same filename, prefers HD subfolders for
+     * HD-hinted channels.
+     *
+     * @param  array<int, string>  $filenames
+     * @param  array<string, list<string>>  $byBasename  Pre-built basename → paths map.
+     */
+    private function resolveFromIndex(array $filenames, string $channelName, string $countryFolder, array $byBasename): ?string
+    {
+        $hdPreferred = (bool) preg_match('/\b(hd|fhd|uhd|4k|8k|1080[pi]|720p)\b/iu', $channelName);
 
         foreach ($filenames as $filename) {
             $lowFilename = strtolower($filename);
@@ -704,6 +741,7 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
             return $empty;
         }
     }
+
 
     /**
      * Persist the match cache to storage.
