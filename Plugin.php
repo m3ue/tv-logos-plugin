@@ -19,6 +19,8 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
 
     private const CACHE_FILE = 'plugin-data/tv-logos/matches.json';
 
+    private const LOG_BATCH_SIZE = 100;
+
     private string $cdnBase;
 
     private string $indexApiBase;
@@ -269,17 +271,22 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
         ));
 
         $matched = 0;
+        $unmatched = 0;
         $cacheHits = 0;
         $cacheMisses = 0;
-        $unmatched = [];
+        $processed = 0;
+        $batchMatched = [];
+        $batchUnmatched = [];
+        $batchStart = 1;
 
-        foreach ($channels as $i => $channel) {
+        foreach ($channels as $channel) {
             $displayName = trim((string) ($channel->title_custom ?? $channel->title ?? $channel->name_custom ?? $channel->name ?? ''));
 
             if ($displayName === '') {
                 continue;
             }
 
+            $processed++;
             $normalizedName = $this->normalizeChannelName($displayName, $normConfig);
             $cacheKey = $countryCode.':'.mb_strtolower($normalizedName, 'UTF-8');
 
@@ -295,17 +302,34 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
 
             if ($logoUrl !== null) {
                 $matched++;
+                $batchMatched[$displayName] = $logoUrl;
 
                 if (! $isDryRun) {
                     Channel::where('id', $channel->id)->update(['logo' => $logoUrl]);
                 }
             } else {
-                $unmatched[] = $displayName;
+                $unmatched++;
+                $batchUnmatched[] = $displayName;
             }
 
-            if (($i + 1) % 20 === 0) {
-                $context->heartbeat(progress: (int) ((($i + 1) / $total) * 100));
+            if ($processed % self::LOG_BATCH_SIZE === 0) {
+                $context->info(
+                    sprintf('Channels %d–%d: %d matched, %d unmatched.', $batchStart, $processed, \count($batchMatched), \count($batchUnmatched)),
+                    ['matched' => $batchMatched, 'unmatched' => $batchUnmatched],
+                );
+                $batchMatched = [];
+                $batchUnmatched = [];
+                $batchStart = $processed + 1;
+                $context->heartbeat(progress: (int) (($processed / $total) * 100));
             }
+        }
+
+        // Flush the final partial batch.
+        if ($batchMatched !== [] || $batchUnmatched !== []) {
+            $context->info(
+                sprintf('Channels %d–%d: %d matched, %d unmatched.', $batchStart, $processed, \count($batchMatched), \count($batchUnmatched)),
+                ['matched' => $batchMatched, 'unmatched' => $batchUnmatched],
+            );
         }
 
         if ($cacheChanged && ! $isDryRun) {
@@ -314,6 +338,7 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
 
         $resultData = [
             'matched' => $matched,
+            'unmatched' => $unmatched,
             'total' => $total,
             'cache_hits' => $cacheHits,
             'cache_misses' => $cacheMisses,
@@ -321,10 +346,6 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
             'dry_run' => $isDryRun,
             'ignore_cache' => $ignoreCache,
         ];
-
-        if ($unmatched !== []) {
-            $resultData['unmatched'] = $unmatched;
-        }
 
         return PluginActionResult::success(
             sprintf('%d of %d channel(s) matched%s.', $matched, $total, $isDryRun ? ' (dry run — no changes written)' : ''),
@@ -719,6 +740,7 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
             return $empty;
         }
     }
+
 
     /**
      * Persist the match cache to storage.
