@@ -224,7 +224,7 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
         $cache = $this->loadCache($cacheTtlDays);
 
         $cacheChanged = false;
-        $index = $this->fetchCountryIndex($countryCode, $countryFolder, $cache, $cacheChanged);
+        $index = $this->fetchCountryIndex($countryCode, $countryFolder, $cache, $cacheChanged, $ignoreCache);
 
         if ($index !== []) {
             $context->info(sprintf('Loaded index of %d known logos for %s.', count($index), $countryFolder));
@@ -294,7 +294,7 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
             if ($logoUrl !== null) {
                 $matched++;
 
-                if (! $isDryRun) {
+                if (! $isDryRun && ($channel->logo ?? '') !== $logoUrl) {
                     Channel::where('id', $channel->id)->update(['logo' => $logoUrl]);
                 }
             } else {
@@ -547,11 +547,11 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
      * @param  array<string, mixed>  $cache
      * @return array<string, true>
      */
-    private function fetchCountryIndex(string $countryCode, string $countryFolder, array &$cache, bool &$cacheChanged): array
+    private function fetchCountryIndex(string $countryCode, string $countryFolder, array &$cache, bool &$cacheChanged, bool $ignoreCache = false): array
     {
         $cacheKey = "index:{$countryCode}";
 
-        if (array_key_exists($cacheKey, $cache) && is_array($cache[$cacheKey])) {
+        if (! $ignoreCache && array_key_exists($cacheKey, $cache) && is_array($cache[$cacheKey])) {
             return $cache[$cacheKey];
         }
 
@@ -643,7 +643,8 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
         }
 
         // Strip common IPTV transport / source terms (always, regardless of quality tag stripping)
-        $name = preg_replace('/\b(cable|sat(?:ellite)?|terrestrial|dvb[tcsh]?|iptv|ott|fta|stream|linear)\b/iu', '', $name) ?? $name;
+        // Use negative lookahead so "sat" inside "SAT.1" is not stripped (sat followed by dot+digit).
+        $name = preg_replace('/\b(cable|sat(?:ellite)?(?![.\s]*\d)|terrestrial|dvb[tcsh]?|iptv|ott|fta|stream|linear)\b/iu', '', $name) ?? $name;
 
         // Remove content inside any bracket type
         $name = preg_replace('/[\(\[\{][^\)\]\}]*[\)\]\}]/', '', $name) ?? $name;
@@ -803,8 +804,9 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
         }
 
         // 3. Strip common IPTV transport / source terms that are never part of a channel name
+        // Use negative lookahead so "Sat" inside "SAT.1" is not stripped (Sat followed by dot/space+digit).
         if ($config['strip_provider_info']) {
-            $name = (string) preg_replace('/\b(Cable|Sat|Satellite|Terrestrial|DVB[TCSH]?|IPTV|OTT|FTA|Stream|Linear)\b/iu', '', $name);
+            $name = (string) preg_replace('/\b(Cable|Sat(?:ellite)?(?![.\s]*\d)|Terrestrial|DVB[TCSH]?|IPTV|OTT|FTA|Stream|Linear)\b/iu', '', $name);
         }
 
         // 4. Strip user-configured provider terms (one term per line in settings)
