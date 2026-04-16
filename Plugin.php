@@ -232,6 +232,8 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
             $context->info('Logo index unavailable — falling back to per-channel CDN HEAD checks (slower).');
         }
 
+        $byBasename = $this->buildBasenameIndex($index);
+
         $query = Channel::query()
             ->where('playlist_id', $playlistId)
             ->where('enabled', true)
@@ -285,7 +287,7 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
                 $logoUrl = $cache['matches'][$cacheKey] ?: null;
                 $cacheHits++;
             } else {
-                $logoUrl = $this->resolveLogoUrl($normalizedName, $countryCode, $countryFolder, $index);
+                $logoUrl = $this->resolveLogoUrl($normalizedName, $countryCode, $countryFolder, $index, $byBasename);
                 $cache['matches'][$cacheKey] = $logoUrl ?? '';
                 $cacheChanged = true;
                 $cacheMisses++;
@@ -338,9 +340,10 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
      * HD subfolders for HD-hinted channels.
      * Falls back to sequential CDN HEAD checks only when the index is unavailable.
      *
-     * @param  array<string, true>  $index  Filename → true map; empty array triggers HEAD fallback.
+     * @param  array<string, true>  $index       Filename → true map; empty array triggers HEAD fallback.
+     * @param  array<string, list<string>>  $byBasename  Pre-built basename lookup (built once per run).
      */
-    private function resolveLogoUrl(string $channelName, string $countryCode, string $countryFolder, array $index): ?string
+    private function resolveLogoUrl(string $channelName, string $countryCode, string $countryFolder, array $index, array $byBasename): ?string
     {
         $slugs = array_values(array_unique(array_filter([
             $this->slugify($channelName, false),
@@ -355,7 +358,7 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
 
         // When an index is available, search all subfolders by basename for best match.
         if ($index !== []) {
-            $result = $this->resolveFromIndex($filenames, $channelName, $countryFolder, $index);
+            $result = $this->resolveFromIndex($filenames, $channelName, $countryFolder, $byBasename);
 
             if ($result !== null) {
                 return $result;
@@ -380,27 +383,40 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
     }
 
     /**
-     * Resolve a logo URL by searching the pre-fetched index across ALL subfolders.
+     * Build a basename → [relativePaths…] lookup from the index.
      *
-     * Builds a basename lookup from the index so that files in nested subfolders
-     * like sky-sport/hd/ or custom/hd/ are found regardless of folder structure.
-     * When multiple paths match the same filename, prefers HD subfolders for
-     * HD-hinted channels.
+     * Called once per run so that resolveFromIndex() can search by filename
+     * without iterating the full index on every channel.
      *
-     * @param  array<int, string>  $filenames
      * @param  array<string, true>  $index
+     * @return array<string, list<string>>
      */
-    private function resolveFromIndex(array $filenames, string $channelName, string $countryFolder, array $index): ?string
+    private function buildBasenameIndex(array $index): array
     {
-        $hdPreferred = (bool) preg_match('/\b(hd|fhd|uhd|4k|8k|1080[pi]|720p)\b/iu', $channelName);
-
-        // Build a basename → [relativePaths…] lookup for efficient searching.
         $byBasename = [];
 
         foreach ($index as $relativePath => $_) {
             $bn = strtolower(basename($relativePath));
             $byBasename[$bn][] = $relativePath;
         }
+
+        return $byBasename;
+    }
+
+    /**
+     * Resolve a logo URL by searching the pre-fetched index across ALL subfolders.
+     *
+     * Uses a pre-built basename lookup so that files in nested subfolders like
+     * sky-sport/hd/ or custom/hd/ are found regardless of folder structure.
+     * When multiple paths match the same filename, prefers HD subfolders for
+     * HD-hinted channels.
+     *
+     * @param  array<int, string>  $filenames
+     * @param  array<string, list<string>>  $byBasename  Pre-built basename → paths map.
+     */
+    private function resolveFromIndex(array $filenames, string $channelName, string $countryFolder, array $byBasename): ?string
+    {
+        $hdPreferred = (bool) preg_match('/\b(hd|fhd|uhd|4k|8k|1080[pi]|720p)\b/iu', $channelName);
 
         foreach ($filenames as $filename) {
             $lowFilename = strtolower($filename);
