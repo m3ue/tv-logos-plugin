@@ -36,95 +36,125 @@
   },
   "settings": [
     {
-      "id": "github_repo",
-      "label": "GitHub Repository (owner/repo)",
-      "type": "text",
-      "default": "tv-logo/tv-logos",
-      "helper_text": "GitHub repository for logo files. Change to use a fork, e.g. your-username/tv-logos."
+      "id": "source_target",
+      "type": "section",
+      "label": "Source & Target",
+      "description": "Logo source repository and playlist assignment.",
+      "collapsible": true,
+      "collapsed": true,
+      "fields": [
+        {
+          "id": "github_repo",
+          "label": "GitHub Repository (owner/repo)",
+          "type": "text",
+          "default": "tv-logo/tv-logos",
+          "helper_text": "GitHub repository for logo files. Change to use a fork, e.g. your-username/tv-logos."
+        },
+        {
+          "id": "default_playlist_id",
+          "label": "Default Playlist(s)",
+          "type": "model_select",
+          "model": "App\\Models\\Playlist",
+          "label_attribute": "name",
+          "scope": "owned",
+          "multiple": true,
+          "helper_text": "Playlists to enrich automatically after each sync. Leave empty to disable automatic enrichment.",
+          "default": null
+        },
+        {
+          "id": "country_code",
+          "label": "Country Code (e.g. us, gb, de, fr)",
+          "type": "text",
+          "default": "us"
+        }
+      ]
     },
     {
-      "id": "default_playlist_id",
-      "label": "Default Playlist(s)",
-      "type": "model_select",
-      "model": "App\\Models\\Playlist",
-      "label_attribute": "name",
-      "scope": "owned",
-      "multiple": true,
-      "helper_text": "Playlists to enrich automatically after each sync. Leave empty to disable automatic enrichment.",
-      "default": null
+      "id": "matching_behavior",
+      "type": "section",
+      "label": "Matching Behavior",
+      "description": "Controls for overwriting, VOD handling, and cache lifetime.",
+      "collapsible": true,
+      "collapsed": true,
+      "fields": [
+        {
+          "id": "overwrite_existing",
+          "label": "Overwrite channels that already have a logo",
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "id": "skip_vod",
+          "label": "Skip VOD channels",
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "id": "cache_ttl_days",
+          "label": "Match cache TTL in days (0 = never expire)",
+          "type": "number",
+          "default": 7
+        }
+      ]
     },
     {
-      "id": "country_code",
-      "label": "Country Code (e.g. us, gb, de, fr)",
-      "type": "text",
-      "default": "us"
-    },
-    {
-      "id": "overwrite_existing",
-      "label": "Overwrite channels that already have a logo",
-      "type": "boolean",
-      "default": false
-    },
-    {
-      "id": "skip_vod",
-      "label": "Skip VOD channels",
-      "type": "boolean",
-      "default": true
-    },
-    {
-      "id": "cache_ttl_days",
-      "label": "Match cache TTL in days (0 = never expire)",
-      "type": "number",
-      "default": 7
-    },
-    {
-      "id": "normalize_channel_names",
-      "label": "Normalize channel names before matching",
-      "type": "boolean",
-      "default": false,
-      "helper_text": "Enable to clean up channel names before logo matching. Configure individual rules below."
-    },
-    {
-      "id": "normalize_strip_unicode",
-      "label": "Strip unicode special characters (², ³, ʀᴀᴡ, etc.)",
-      "type": "boolean",
-      "default": true,
-      "helper_text": "Remove superscripts, subscripts, and small-caps unicode characters."
-    },
-    {
-      "id": "normalize_strip_raw",
-      "label": "Strip 'raw' from quality tags (HDraw → HD)",
-      "type": "boolean",
-      "default": true,
-      "helper_text": "Remove 'raw' suffix from quality indicators like HDraw, FHDraw, UHDraw."
-    },
-    {
-      "id": "normalize_strip_provider_info",
-      "label": "Strip provider/transport terms from channel names",
-      "type": "boolean",
-      "default": true,
-      "helper_text": "Remove provider or transport identifiers (e.g. Cable, IPTV) that are not part of the channel name. Configure the terms to strip in the field below."
-    },
-    {
-      "id": "normalize_provider_terms",
-      "label": "Provider/transport terms to strip (one per line)",
-      "type": "textarea",
-      "default": "Cable\nIPTV\nTerrestrial\nDVB-T\nDVB-T2\nDVB-C\nDVB-S\nDVB-S2",
-      "helper_text": "Terms matched as whole words (case-insensitive) and removed from channel names. Add provider-specific terms for your setup, e.g. Sat, Kabel, Astra — but check first that they don't clash with actual channel names."
-    },
-    {
-      "id": "normalize_strip_quality_extras",
-      "label": "Strip extra quality descriptors (Low, High, etc.)",
-      "type": "boolean",
-      "default": true,
-      "helper_text": "Remove Low/High when appended to a quality tag (e.g. HD Low → HD, UHD High → UHD)."
-    },
-    {
-      "id": "normalize_custom_patterns",
-      "label": "Custom normalization patterns (one regex per line)",
-      "type": "textarea",
-      "default": null,
-      "helper_text": "Advanced: custom regex patterns to remove from channel names. One pattern per line, applied in order."
+      "id": "name_normalization",
+      "type": "section",
+      "label": "Channel Name Normalization",
+      "description": "Normalize channel names before matching against the logo repository.",
+      "collapsible": true,
+      "collapsed": true,
+      "fields": [
+        {
+          "id": "normalize_channel_names",
+          "label": "Normalize channel names before matching",
+          "type": "boolean",
+          "default": false,
+          "helper_text": "Enable to clean up channel names before logo matching. Configure individual rules below."
+        },
+        {
+          "id": "normalize_strip_unicode",
+          "label": "Strip unicode special characters (², ³, ʀᴀᴡ, etc.)",
+          "type": "boolean",
+          "default": true,
+          "helper_text": "Remove superscripts, subscripts, and small-caps unicode characters."
+        },
+        {
+          "id": "normalize_strip_raw",
+          "label": "Strip 'raw' from quality tags (HDraw → HD)",
+          "type": "boolean",
+          "default": true,
+          "helper_text": "Remove 'raw' suffix from quality indicators like HDraw, FHDraw, UHDraw."
+        },
+        {
+          "id": "normalize_strip_provider_info",
+          "label": "Strip provider/transport terms from channel names",
+          "type": "boolean",
+          "default": true,
+          "helper_text": "Remove provider or transport identifiers (e.g. Cable, IPTV) that are not part of the channel name. Configure the terms to strip in the field below."
+        },
+        {
+          "id": "normalize_provider_terms",
+          "label": "Provider/transport terms to strip (one per line)",
+          "type": "textarea",
+          "default": "Cable\nIPTV\nTerrestrial\nDVB-T\nDVB-T2\nDVB-C\nDVB-S\nDVB-S2",
+          "helper_text": "Terms matched as whole words (case-insensitive) and removed from channel names. Add provider-specific terms for your setup, e.g. Sat, Kabel, Astra — but check first that they don't clash with actual channel names."
+        },
+        {
+          "id": "normalize_strip_quality_extras",
+          "label": "Strip extra quality descriptors (Low, High, etc.)",
+          "type": "boolean",
+          "default": true,
+          "helper_text": "Remove Low/High when appended to a quality tag (e.g. HD Low → HD, UHD High → UHD)."
+        },
+        {
+          "id": "normalize_custom_patterns",
+          "label": "Custom normalization patterns (one regex per line)",
+          "type": "textarea",
+          "default": null,
+          "helper_text": "Advanced: custom regex patterns to remove from channel names. One pattern per line, applied in order."
+        }
+      ]
     }
   ],
   "actions": [
