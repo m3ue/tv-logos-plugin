@@ -1,7 +1,7 @@
 {
   "id": "tv-logos",
   "name": "TV Logos",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "api_version": "1.0.0",
   "repository": "m3ue/tv-logos-plugin",
   "description": "Automatically enriches channel logos from the open-source tv-logo/tv-logos repository via the jsDelivr CDN.",
