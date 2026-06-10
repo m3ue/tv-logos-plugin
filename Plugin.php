@@ -21,6 +21,14 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
 
     private const LOG_BATCH_SIZE = 100;
 
+    /**
+     * Non-semantic filename tokens used by logo repositories for variants.
+     * These are ignored only after exact filename matching has failed.
+     *
+     * @var array<int, string>
+     */
+    private const LOGO_VARIANT_TOKENS = ['custom', 'hd', 'fhd', 'uhd', 'sd', '4k', '8k'];
+
     private string $cdnBase;
 
     private string $indexApiBase;
@@ -114,11 +122,11 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
         $watchedIds = array_map('intval', array_filter((array) $configured));
 
         if ($watchedIds === []) {
-            return PluginActionResult::success('No default playlist(s) configured — skipping automatic enrichment.');
+            return PluginActionResult::success('No default playlist(s) configured - skipping automatic enrichment.');
         }
 
         if (! in_array($playlistId, $watchedIds, true)) {
-            return PluginActionResult::success("Playlist #{$playlistId} is not in the configured defaults — skipping.");
+            return PluginActionResult::success("Playlist #{$playlistId} is not in the configured defaults - skipping.");
         }
 
         return $this->processPlaylist($playlistId, $context);
@@ -190,7 +198,7 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
     }
 
     /**
-     * Core enrichment logic — queries channels for the given playlist and attempts
+     * Core enrichment logic - queries channels for the given playlist and attempts
      * to match each one against a logo from the tv-logo/tv-logos CDN.
      *
      * @param  array{overwrite_existing?: bool, skip_vod?: bool, ignore_cache?: bool}  $overrides
@@ -210,6 +218,7 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
         if ($repo === '') {
             $repo = self::DEFAULT_GITHUB_REPO;
         }
+        $repoCacheKey = $this->normalizeRepoCacheKey($repo);
         $this->cdnBase = "https://cdn.jsdelivr.net/gh/{$repo}@main/countries";
         $this->indexApiBase = "https://api.github.com/repos/{$repo}/contents/countries";
 
@@ -226,12 +235,12 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
         $cache = $this->loadCache($cacheTtlDays);
 
         $cacheChanged = false;
-        $index = $this->fetchCountryIndex($countryCode, $countryFolder, $cache, $cacheChanged, $ignoreCache);
+        $index = $this->fetchCountryIndex($countryCode, $countryFolder, $repoCacheKey, $cache, $cacheChanged, $ignoreCache);
 
         if ($index !== []) {
             $context->info(sprintf('Loaded index of %d known logos for %s.', count($index), $countryFolder));
         } else {
-            $context->info('Logo index unavailable — falling back to per-channel CDN HEAD checks (slower).');
+            $context->info('Logo index unavailable - falling back to per-channel CDN HEAD checks (slower).');
         }
 
         $byBasename = $this->buildBasenameIndex($index);
@@ -288,7 +297,7 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
 
             $processed++;
             $normalizedName = $this->normalizeChannelName($displayName, $normConfig);
-            $cacheKey = $countryCode.':'.mb_strtolower($normalizedName, 'UTF-8');
+            $cacheKey = $repoCacheKey.':'.$countryCode.':'.mb_strtolower($normalizedName, 'UTF-8');
 
             if (! $ignoreCache && array_key_exists($cacheKey, $cache['matches'])) {
                 $logoUrl = $cache['matches'][$cacheKey] ?: null;
@@ -314,7 +323,7 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
 
             if ($processed % self::LOG_BATCH_SIZE === 0) {
                 $context->info(
-                    sprintf('Channels %d–%d: %d matched, %d unmatched.', $batchStart, $processed, \count($batchMatched), \count($batchUnmatched)),
+                    sprintf('Channels %d-%d: %d matched, %d unmatched.', $batchStart, $processed, \count($batchMatched), \count($batchUnmatched)),
                     ['matched' => $batchMatched, 'unmatched' => $batchUnmatched],
                 );
                 $batchMatched = [];
@@ -327,7 +336,7 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
         // Flush the final partial batch.
         if ($batchMatched !== [] || $batchUnmatched !== []) {
             $context->info(
-                sprintf('Channels %d–%d: %d matched, %d unmatched.', $batchStart, $processed, \count($batchMatched), \count($batchUnmatched)),
+                sprintf('Channels %d-%d: %d matched, %d unmatched.', $batchStart, $processed, \count($batchMatched), \count($batchUnmatched)),
                 ['matched' => $batchMatched, 'unmatched' => $batchUnmatched],
             );
         }
@@ -348,7 +357,7 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
         ];
 
         return PluginActionResult::success(
-            sprintf('%d of %d channel(s) matched%s.', $matched, $total, $isDryRun ? ' (dry run — no changes written)' : ''),
+            sprintf('%d of %d channel(s) matched%s.', $matched, $total, $isDryRun ? ' (dry run - no changes written)' : ''),
             $resultData
         );
     }
@@ -448,12 +457,12 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
 
             $paths = $byBasename[$lowFilename];
 
-            // Single match — return immediately.
+            // Single match - return immediately.
             if (count($paths) === 1) {
                 return $this->cdnBase."/{$countryFolder}/{$paths[0]}";
             }
 
-            // Multiple matches — pick the best based on quality preference.
+            // Multiple matches - pick the best based on quality preference.
             $hdMatch = null;
             $rootMatch = null;
 
@@ -498,7 +507,7 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
             $parts = explode('-', $slug);
             $lastPart = end($parts);
             $qualitySuffixes = ['hd', 'fhd', 'uhd', 'sd', '4k', '8k'];
-            if (count($parts) > 1 && ! ctype_digit($lastPart) && ! in_array($lastPart, $qualitySuffixes, true)) {
+            if (count($parts) > 1 && ! preg_match('/^\d+$/', $lastPart) && ! in_array($lastPart, $qualitySuffixes, true)) {
                 $shortened = implode('-', array_slice($parts, 0, -1));
                 if ($shortened !== '') {
                     $filenames[] = "{$shortened}-{$countryCode}.png";
@@ -520,7 +529,7 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
     }
 
     /**
-     * Compact matching fallback — strips all hyphens from both the channel slug
+     * Compact matching fallback - strips all hyphens from both the channel slug
      * and index filenames so minor hyphenation differences still match
      * (e.g. "sport1" vs "sport-1-de.png").
      *
@@ -531,47 +540,127 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
     {
         $suffixes = ["-{$countryCode}.png", '.png'];
         $qualityFolders = $this->preferredQualityFolders($channelName);
+        $channelSlugTiers = $this->buildCompactMatchCandidateTiers($slugs);
 
-        $compactChannelSlugs = array_map(fn (string $s): string => str_replace('-', '', $s), $slugs);
+        foreach ($channelSlugTiers as $channelSlugs) {
+            foreach ($qualityFolders as $preferredFolder) {
+                foreach ($index as $relativePath => $_) {
+                    $basename = basename($relativePath);
+                    $suffixLen = 0;
 
-        foreach ($qualityFolders as $preferredFolder) {
-            foreach ($index as $relativePath => $_) {
-                $basename = basename($relativePath);
-                $suffixLen = 0;
+                    foreach ($suffixes as $suffix) {
+                        if (str_ends_with($basename, $suffix)) {
+                            $suffixLen = strlen($suffix);
 
-                foreach ($suffixes as $suffix) {
-                    if (str_ends_with($basename, $suffix)) {
-                        $suffixLen = strlen($suffix);
-
-                        break;
+                            break;
+                        }
                     }
-                }
 
-                if ($suffixLen === 0) {
-                    continue;
-                }
+                    if ($suffixLen === 0) {
+                        continue;
+                    }
 
-                $folder = dirname($relativePath);
-                $folder = $folder === '.' ? '' : $folder;
+                    $folder = dirname($relativePath);
+                    $folder = $folder === '.' ? '' : $folder;
 
-                $isHdPath = $folder === 'hd' || str_ends_with($folder, '/hd');
-                $wantsHd = $preferredFolder === 'hd';
+                    $isHdPath = $folder === 'hd' || str_ends_with($folder, '/hd');
+                    $wantsHd = $preferredFolder === 'hd';
 
-                if ($wantsHd !== $isHdPath) {
-                    continue;
-                }
+                    if ($wantsHd !== $isHdPath) {
+                        continue;
+                    }
 
-                $indexSlug = str_replace('-', '', substr($basename, 0, -$suffixLen));
+                    $indexStem = substr($basename, 0, -$suffixLen);
+                    $indexCandidates = $this->buildCompactMatchCandidates([$indexStem]);
 
-                foreach ($compactChannelSlugs as $compact) {
-                    if ($indexSlug === $compact) {
-                        return $this->cdnBase."/{$countryFolder}/{$relativePath}";
+                    foreach ($channelSlugs as $channelCandidate) {
+                        foreach ($indexCandidates as $indexCandidate) {
+                            if ($indexCandidate === $channelCandidate) {
+                                return $this->cdnBase."/{$countryFolder}/{$relativePath}";
+                            }
+
+                            if ($this->isSafeCompactSuffixMatch($indexCandidate, $channelCandidate)) {
+                                return $this->cdnBase."/{$countryFolder}/{$relativePath}";
+                            }
+                        }
                     }
                 }
             }
         }
 
         return null;
+    }
+
+    /**
+     * Build compact filename match candidates for fuzzy index matching.
+     *
+     * @param  array<int, string>  $slugs
+     * @return array<int, array<int, string>>
+     */
+    private function buildCompactMatchCandidateTiers(array $slugs): array
+    {
+        $primary = [];
+
+        foreach ($slugs as $slug) {
+            $slug = trim($slug, '-');
+
+            if ($slug !== '') {
+                $primary[] = str_replace('-', '', $slug);
+
+                break;
+            }
+        }
+
+        $all = $this->buildCompactMatchCandidates($slugs);
+        $secondary = array_values(array_diff($all, $primary));
+
+        return array_values(array_filter([
+            array_values(array_unique(array_filter($primary))),
+            array_values(array_unique(array_filter($secondary))),
+        ]));
+    }
+
+    /**
+     * Build compact filename match candidates for fuzzy index matching.
+     *
+     * @param  array<int, string>  $slugs
+     * @return array<int, string>
+     */
+    private function buildCompactMatchCandidates(array $slugs): array
+    {
+        $candidates = [];
+
+        foreach ($slugs as $slug) {
+            $slug = trim($slug, '-');
+
+            if ($slug === '') {
+                continue;
+            }
+
+            $candidates[] = str_replace('-', '', $slug);
+            $candidates[] = $this->stripVariantTokensForMatch($slug);
+        }
+
+        return array_values(array_unique(array_filter($candidates)));
+    }
+
+    private function stripVariantTokensForMatch(string $slug): string
+    {
+        $tokens = array_values(array_filter(
+            explode('-', $slug),
+            fn (string $token): bool => $token !== '' && ! in_array($token, self::LOGO_VARIANT_TOKENS, true)
+        ));
+
+        return implode('', $tokens);
+    }
+
+    private function isSafeCompactSuffixMatch(string $indexCandidate, string $channelCandidate): bool
+    {
+        if (strlen($channelCandidate) < 8 || strlen($indexCandidate) <= strlen($channelCandidate)) {
+            return false;
+        }
+
+        return str_ends_with($indexCandidate, $channelCandidate);
     }
 
     /**
@@ -584,9 +673,9 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
      * @param  array<string, mixed>  $cache
      * @return array<string, true>
      */
-    private function fetchCountryIndex(string $countryCode, string $countryFolder, array &$cache, bool &$cacheChanged, bool $ignoreCache = false): array
+    private function fetchCountryIndex(string $countryCode, string $countryFolder, string $repoCacheKey, array &$cache, bool &$cacheChanged, bool $ignoreCache = false): array
     {
-        $cacheKey = "index:{$countryCode}";
+        $cacheKey = "index:{$repoCacheKey}:{$countryCode}";
 
         if (! $ignoreCache && array_key_exists($cacheKey, $cache) && is_array($cache[$cacheKey])) {
             return $cache[$cacheKey];
@@ -717,7 +806,7 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
      */
     private function loadCache(int $cacheTtlDays): array
     {
-        $empty = ['version' => 4, 'cached_at' => now()->toIso8601String(), 'matches' => []];
+        $empty = ['version' => 5, 'cached_at' => now()->toIso8601String(), 'matches' => []];
 
         try {
             if (! Storage::disk('local')->exists(self::CACHE_FILE)) {
@@ -726,7 +815,7 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
 
             $data = json_decode((string) Storage::disk('local')->get(self::CACHE_FILE), true);
 
-            if (! is_array($data) || ! isset($data['matches']) || ($data['version'] ?? 1) < 4) {
+            if (! is_array($data) || ! isset($data['matches']) || ($data['version'] ?? 1) < 5) {
                 return $empty;
             }
 
@@ -753,8 +842,16 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
                 json_encode($cache, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)
             );
         } catch (Throwable) {
-            // Non-fatal — a missing cache means the next run re-checks the CDN.
+            // Non-fatal - a missing cache means the next run re-checks the CDN.
         }
+    }
+
+    private function normalizeRepoCacheKey(string $repo): string
+    {
+        $normalized = mb_strtolower(trim($repo), 'UTF-8');
+        $normalized = preg_replace('/[^a-z0-9_.\/-]+/', '_', $normalized) ?: '';
+
+        return $normalized !== '' ? $normalized : self::DEFAULT_GITHUB_REPO;
     }
 
     /**

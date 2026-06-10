@@ -5,7 +5,7 @@ An official plugin for [m3u-editor](https://github.com/m3ue/m3u-editor) that aut
 ## Features
 
 - Matches channel names to logos using a two-pass strategy: a cached GitHub Contents API index (fast, O(1)) with a HEAD-check fallback
-- Quality-aware folder probing — channels with HD hints (`HD`, `FHD`, `4K`, etc.) prefer the `hd/` subfolder first
+- Quality-aware folder probing - channels with HD hints (`HD`, `FHD`, `4K`, etc.) prefer the `hd/` subfolder first
 - CamelCase splitting, dot/plus normalisation, and compact hyphenation matching for resilient name resolution
 - Per-run match cache with configurable TTL to avoid redundant API calls
 - Supports 60+ country codes (ISO 3166-1 alpha-2)
@@ -33,7 +33,7 @@ Once staged, approve the install review in the UI and enable the plugin.
 | Setting | Default | Description |
 |---|---|---|
 | `github_repo` | `tv-logo/tv-logos` | Source repository (`owner/repo`). Point to a fork to use custom logos. |
-| `default_playlist_id` | — | Playlists to enrich automatically after each sync. |
+| `default_playlist_id` | - | Playlists to enrich automatically after each sync. |
 | `country_code` | `us` | ISO 3166-1 alpha-2 country code (e.g. `gb`, `de`, `fr`). |
 | `overwrite_existing` | `false` | Overwrite channels that already have a logo URL. |
 | `skip_vod` | `true` | Skip VOD channels. |
