@@ -20,6 +20,8 @@ zip -r "$ARCHIVE_PATH" . \
   -x 'README.md' \
   -x 'AGENTS.md' \
   -x 'CLAUDE.md' \
+  -x 'CONTEXT.md' \
+  -x '.gitignore' \
   -x '.DS_Store' \
   -x '._*'
 

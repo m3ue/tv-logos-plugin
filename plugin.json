@@ -138,7 +138,7 @@
           "label": "Provider/transport terms to strip (one per line)",
           "type": "textarea",
           "default": "Cable\nIPTV\nTerrestrial\nDVB-T\nDVB-T2\nDVB-C\nDVB-S\nDVB-S2",
-          "helper_text": "Terms matched as whole words (case-insensitive) and removed from channel names. Add provider-specific terms for your setup, e.g. Sat, Kabel, Astra — but check first that they don't clash with actual channel names."
+          "helper_text": "Terms matched as whole words (case-insensitive) and removed from channel names. Add provider-specific terms for your setup, e.g. Sat, Kabel, Astra - but check first that they don't clash with actual channel names."
         },
         {
           "id": "normalize_strip_quality_extras",
