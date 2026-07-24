@@ -39,7 +39,7 @@ Once staged, approve the install review in the UI and enable the plugin.
 | `github_repo` | `tv-logo/tv-logos` | Source repository (`owner/repo`) used when `logo_source` is `tv-logo`. Point to a fork to use custom logos. |
 | `kyzu_github_repo` | `K-yzu/Logos` | Source repository (`owner/repo`) used when `logo_source` is `kyzu`. |
 | `default_playlist_id` | - | Playlists to enrich automatically after each sync. |
-| `country_code` | `us` | ISO 3166-1 alpha-2 country code (e.g. `gb`, `de`, `fr`). Supported codes vary by `logo_source`. |
+| `country_code` | `["us"]` | One or more ISO 3166-1 alpha-2 country codes. Tried in order per channel - the first country with a match wins. Supported codes vary by `logo_source`; codes unsupported by the active source are skipped. |
 | `overwrite_existing` | `false` | Overwrite channels that already have a logo URL. |
 | `skip_vod` | `true` | Skip VOD channels. |
 | `cache_ttl_days` | `7` | Match cache lifetime in days. Set to `0` to never expire. |

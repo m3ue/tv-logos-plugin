@@ -248,7 +248,19 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
     private function processPlaylist(int $playlistId, PluginExecutionContext $context, array $overrides = []): PluginActionResult
     {
         $settings = $context->settings;
-        $countryCode = strtolower(trim((string) ($settings['country_code'] ?? 'us')));
+
+        // country_code is a multi-select as of v1.0.9; legacy installs may still have
+        // a plain string persisted from when it was a single text field.
+        $countryCodeSetting = $settings['country_code'] ?? 'us';
+        $countryCodes = array_values(array_unique(array_filter(array_map(
+            static fn (mixed $code): string => strtolower(trim((string) $code)),
+            is_array($countryCodeSetting) ? $countryCodeSetting : [$countryCodeSetting]
+        ))));
+
+        if ($countryCodes === []) {
+            $countryCodes = ['us'];
+        }
+
         $overwriteExisting = (bool) ($overrides['overwrite_existing'] ?? $settings['overwrite_existing'] ?? false);
         $skipVod = (bool) ($overrides['skip_vod'] ?? $settings['skip_vod'] ?? true);
         $ignoreCache = (bool) ($overrides['ignore_cache'] ?? false);
@@ -282,32 +294,54 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
         }
 
         $repoCacheKey = $this->normalizeRepoCacheKey($repo);
-        $countryFolder = $countryFolders[$countryCode] ?? null;
+        $cache = $this->loadCache($cacheTtlDays);
+        $cacheChanged = false;
 
-        if ($countryFolder === null) {
+        $countryConfigs = [];
+        $skippedCountryCodes = [];
+
+        foreach ($countryCodes as $countryCode) {
+            $countryFolder = $countryFolders[$countryCode] ?? null;
+
+            if ($countryFolder === null) {
+                $skippedCountryCodes[] = $countryCode;
+
+                continue;
+            }
+
+            $index = $this->fetchCountryIndex($countryCode, $countryFolder, $repoCacheKey, $cache, $cacheChanged, $ignoreCache);
+
+            if ($index !== []) {
+                $context->info(sprintf('Loaded index of %d known logos for %s.', count($index), $countryFolder));
+            } elseif ($source === 'kyzu') {
+                $context->info(sprintf('Logo index unavailable for %s - no matches can be made for this country.', $countryFolder));
+            } else {
+                $context->info(sprintf('Logo index unavailable for %s - falling back to per-channel CDN HEAD checks (slower).', $countryFolder));
+            }
+
+            $countryConfigs[$countryCode] = [
+                'folder' => $countryFolder,
+                'index' => $index,
+                'byBasename' => $this->buildBasenameIndex($index),
+                'kyzuCompactIndex' => $source === 'kyzu' ? $this->buildKyzuCompactIndex($index) : [],
+            ];
+        }
+
+        if ($skippedCountryCodes !== []) {
+            $context->info(sprintf(
+                'Skipping unsupported country code(s) for source [%s]: %s.',
+                $source,
+                implode(', ', $skippedCountryCodes)
+            ));
+        }
+
+        if ($countryConfigs === []) {
             return PluginActionResult::failure(sprintf(
-                'Unknown country code [%s] for source [%s]. Supported codes: %s.',
-                $countryCode,
+                'No usable country code(s) for source [%s]. Supported codes: %s.',
                 $source,
                 implode(', ', array_keys($countryFolders))
             ));
         }
-
-        $cache = $this->loadCache($cacheTtlDays);
-
-        $cacheChanged = false;
-        $index = $this->fetchCountryIndex($countryCode, $countryFolder, $repoCacheKey, $cache, $cacheChanged, $ignoreCache);
-
-        if ($index !== []) {
-            $context->info(sprintf('Loaded index of %d known logos for %s.', count($index), $countryFolder));
-        } elseif ($source === 'kyzu') {
-            $context->info('Logo index unavailable for the K-yzu/Logos source - no matches can be made this run.');
-        } else {
-            $context->info('Logo index unavailable - falling back to per-channel CDN HEAD checks (slower).');
-        }
-
-        $byBasename = $this->buildBasenameIndex($index);
-        $kyzuCompactIndex = $source === 'kyzu' ? $this->buildKyzuCompactIndex($index) : [];
 
         $query = Channel::query()
             ->where('playlist_id', $playlistId)
@@ -339,7 +373,7 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
             'Processing %d channel(s) for playlist #%d [country=%s%s].',
             $total,
             $playlistId,
-            $countryCode,
+            implode(',', array_keys($countryConfigs)),
             $isDryRun ? ', dry_run' : ''
         ));
 
@@ -361,16 +395,37 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
 
             $processed++;
             $normalizedName = $this->normalizeChannelName($displayName, $normConfig);
-            $cacheKey = $repoCacheKey.':'.$countryCode.':'.mb_strtolower($normalizedName, 'UTF-8');
+            $logoUrl = null;
 
-            if (! $ignoreCache && array_key_exists($cacheKey, $cache['matches'])) {
-                $logoUrl = $cache['matches'][$cacheKey] ?: null;
-                $cacheHits++;
-            } else {
-                $logoUrl = $this->resolveLogoUrl($normalizedName, $countryCode, $countryFolder, $index, $byBasename, $source, $kyzuCompactIndex);
-                $cache['matches'][$cacheKey] = $logoUrl ?? '';
-                $cacheChanged = true;
-                $cacheMisses++;
+            // Try each configured country in order; the first match wins. Each
+            // country keeps its own cache entry (including negative matches), so
+            // subsequent runs skip straight past countries already ruled out.
+            foreach ($countryConfigs as $countryCode => $countryConfig) {
+                $cacheKey = $repoCacheKey.':'.$countryCode.':'.mb_strtolower($normalizedName, 'UTF-8');
+
+                if (! $ignoreCache && array_key_exists($cacheKey, $cache['matches'])) {
+                    $candidate = $cache['matches'][$cacheKey] ?: null;
+                    $cacheHits++;
+                } else {
+                    $candidate = $this->resolveLogoUrl(
+                        $normalizedName,
+                        $countryCode,
+                        $countryConfig['folder'],
+                        $countryConfig['index'],
+                        $countryConfig['byBasename'],
+                        $source,
+                        $countryConfig['kyzuCompactIndex']
+                    );
+                    $cache['matches'][$cacheKey] = $candidate ?? '';
+                    $cacheChanged = true;
+                    $cacheMisses++;
+                }
+
+                if ($candidate !== null) {
+                    $logoUrl = $candidate;
+
+                    break;
+                }
             }
 
             if ($logoUrl !== null) {
@@ -415,7 +470,7 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
             'total' => $total,
             'cache_hits' => $cacheHits,
             'cache_misses' => $cacheMisses,
-            'country_code' => $countryCode,
+            'country_codes' => array_keys($countryConfigs),
             'dry_run' => $isDryRun,
             'ignore_cache' => $ignoreCache,
         ];
