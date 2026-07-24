@@ -1,10 +1,10 @@
 {
   "id": "tv-logos",
   "name": "TV Logos",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "api_version": "1.0.0",
   "repository": "m3ue/tv-logos-plugin",
-  "description": "Automatically enriches channel logos from the open-source tv-logo/tv-logos repository via the jsDelivr CDN.",
+  "description": "Automatically enriches channel logos from the open-source tv-logo/tv-logos or K-yzu/Logos repositories via the jsDelivr CDN.",
   "entrypoint": "Plugin.php",
   "class": "AppLocalPlugins\\TvLogos\\Plugin",
   "capabilities": [
@@ -44,11 +44,29 @@
       "collapsed": false,
       "fields": [
         {
+          "id": "logo_source",
+          "label": "Logo Source",
+          "type": "select",
+          "default": "tv-logo",
+          "options": {
+            "tv-logo": "tv-logo/tv-logos",
+            "kyzu": "K-yzu/Logos"
+          },
+          "helper_text": "Which logo repository layout to match against. K-yzu/Logos covers US, CA, UK, AU and NZ channels; its regional-affiliate subfolders (e.g. TV:US2) are not indexed yet."
+        },
+        {
           "id": "github_repo",
-          "label": "GitHub Repository (owner/repo)",
+          "label": "tv-logo/tv-logos GitHub Repository (owner/repo)",
           "type": "text",
           "default": "tv-logo/tv-logos",
-          "helper_text": "GitHub repository for logo files. Change to use a fork, e.g. your-username/tv-logos."
+          "helper_text": "Used when Logo Source is tv-logo/tv-logos. Change to use a fork, e.g. your-username/tv-logos."
+        },
+        {
+          "id": "kyzu_github_repo",
+          "label": "K-yzu/Logos GitHub Repository (owner/repo)",
+          "type": "text",
+          "default": "K-yzu/Logos",
+          "helper_text": "Used when Logo Source is K-yzu/Logos. Change to use a fork."
         },
         {
           "id": "default_playlist_id",
@@ -65,7 +83,8 @@
           "id": "country_code",
           "label": "Country Code (e.g. us, gb, de, fr)",
           "type": "text",
-          "default": "us"
+          "default": "us",
+          "helper_text": "tv-logo/tv-logos supports 60+ codes. K-yzu/Logos currently supports us, ca, gb, au, nz."
         }
       ]
     },

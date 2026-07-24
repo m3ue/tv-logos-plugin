@@ -17,6 +17,8 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
 {
     private const DEFAULT_GITHUB_REPO = 'tv-logo/tv-logos';
 
+    private const DEFAULT_KYZU_REPO = 'K-yzu/Logos';
+
     private const CACHE_FILE = 'plugin-data/tv-logos/matches.json';
 
     private const LOG_BATCH_SIZE = 100;
@@ -32,6 +34,28 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
     private string $cdnBase;
 
     private string $indexApiBase;
+
+    /**
+     * Lowercase file extensions (without the dot) to index for the active source.
+     *
+     * @var array<int, string>
+     */
+    private array $indexExtensions = ['png'];
+
+    /**
+     * Maps ISO 3166-1 alpha-2 country codes to their top-level folder in the
+     * K-yzu/Logos repo. Regional affiliate/supplemental folders (e.g. TV:US2)
+     * are not indexed in this initial integration.
+     *
+     * @var array<string, string>
+     */
+    private const KYZU_COUNTRY_FOLDERS = [
+        'us' => 'TV:US',
+        'ca' => 'TV:CA',
+        'gb' => 'TV:UK',
+        'au' => 'TV:AU',
+        'nz' => 'TV:NZ',
+    ];
 
     /**
      * Maps ISO 3166-1 alpha-2 country codes to their folder names in the tv-logo/tv-logos repo.
@@ -137,13 +161,30 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
      */
     private function healthCheck(PluginExecutionContext $context): PluginActionResult
     {
-        $context->info('Checking tv-logos CDN reachability...');
+        $context->info('Checking logo source CDN reachability...');
+
+        $settings = $context->settings;
+        $source = (string) ($settings['logo_source'] ?? 'tv-logo');
+        if (! in_array($source, ['tv-logo', 'kyzu'], true)) {
+            $source = 'tv-logo';
+        }
+
+        if ($source === 'kyzu') {
+            $repo = trim((string) ($settings['kyzu_github_repo'] ?? self::DEFAULT_KYZU_REPO)) ?: self::DEFAULT_KYZU_REPO;
+            $cdnBase = "https://cdn.jsdelivr.net/gh/{$repo}@main";
+            $pingUrl = $cdnBase.'/'.rawurlencode('TV:US').'/'.rawurlencode('ABC.png');
+            $supportedCountries = array_keys(self::KYZU_COUNTRY_FOLDERS);
+        } else {
+            $repo = trim((string) ($settings['github_repo'] ?? self::DEFAULT_GITHUB_REPO)) ?: self::DEFAULT_GITHUB_REPO;
+            $cdnBase = "https://cdn.jsdelivr.net/gh/{$repo}@main/countries";
+            $pingUrl = $cdnBase.'/united-states/espn-us.png';
+            $supportedCountries = array_keys(self::COUNTRY_FOLDERS);
+        }
 
         $reachable = false;
 
         try {
-            $response = Http::timeout(10)->head('https://cdn.jsdelivr.net/gh/'.self::DEFAULT_GITHUB_REPO.'@main/countries/united-states/espn-us.png');
-            $reachable = $response->successful();
+            $reachable = Http::timeout(10)->head($pingUrl)->successful();
         } catch (Throwable) {
             // CDN unreachable
         }
@@ -158,10 +199,11 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
         }
 
         return PluginActionResult::success('Health check complete.', [
+            'source' => $source,
             'cdn_reachable' => $reachable,
-            'cdn_base' => 'https://cdn.jsdelivr.net/gh/'.self::DEFAULT_GITHUB_REPO.'@main/countries',
+            'cdn_base' => $cdnBase,
             'cached_entries' => $cacheEntries,
-            'supported_countries' => array_keys(self::COUNTRY_FOLDERS),
+            'supported_countries' => $supportedCountries,
         ]);
     }
 
@@ -214,21 +256,40 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
         $isDryRun = $context->dryRun;
         $normConfig = $this->buildNormalizationConfig($settings);
 
-        $repo = trim((string) ($settings['github_repo'] ?? self::DEFAULT_GITHUB_REPO));
-        if ($repo === '') {
-            $repo = self::DEFAULT_GITHUB_REPO;
+        $source = (string) ($settings['logo_source'] ?? 'tv-logo');
+        if (! in_array($source, ['tv-logo', 'kyzu'], true)) {
+            $source = 'tv-logo';
         }
-        $repoCacheKey = $this->normalizeRepoCacheKey($repo);
-        $this->cdnBase = "https://cdn.jsdelivr.net/gh/{$repo}@main/countries";
-        $this->indexApiBase = "https://api.github.com/repos/{$repo}/contents/countries";
 
-        $countryFolder = self::COUNTRY_FOLDERS[$countryCode] ?? null;
+        if ($source === 'kyzu') {
+            $repo = trim((string) ($settings['kyzu_github_repo'] ?? self::DEFAULT_KYZU_REPO));
+            if ($repo === '') {
+                $repo = self::DEFAULT_KYZU_REPO;
+            }
+            $this->cdnBase = "https://cdn.jsdelivr.net/gh/{$repo}@main";
+            $this->indexApiBase = "https://api.github.com/repos/{$repo}/contents";
+            $this->indexExtensions = ['png', 'gif'];
+            $countryFolders = self::KYZU_COUNTRY_FOLDERS;
+        } else {
+            $repo = trim((string) ($settings['github_repo'] ?? self::DEFAULT_GITHUB_REPO));
+            if ($repo === '') {
+                $repo = self::DEFAULT_GITHUB_REPO;
+            }
+            $this->cdnBase = "https://cdn.jsdelivr.net/gh/{$repo}@main/countries";
+            $this->indexApiBase = "https://api.github.com/repos/{$repo}/contents/countries";
+            $this->indexExtensions = ['png'];
+            $countryFolders = self::COUNTRY_FOLDERS;
+        }
+
+        $repoCacheKey = $this->normalizeRepoCacheKey($repo);
+        $countryFolder = $countryFolders[$countryCode] ?? null;
 
         if ($countryFolder === null) {
             return PluginActionResult::failure(sprintf(
-                'Unknown country code [%s]. Supported codes: %s.',
+                'Unknown country code [%s] for source [%s]. Supported codes: %s.',
                 $countryCode,
-                implode(', ', array_keys(self::COUNTRY_FOLDERS))
+                $source,
+                implode(', ', array_keys($countryFolders))
             ));
         }
 
@@ -239,11 +300,14 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
 
         if ($index !== []) {
             $context->info(sprintf('Loaded index of %d known logos for %s.', count($index), $countryFolder));
+        } elseif ($source === 'kyzu') {
+            $context->info('Logo index unavailable for the K-yzu/Logos source - no matches can be made this run.');
         } else {
             $context->info('Logo index unavailable - falling back to per-channel CDN HEAD checks (slower).');
         }
 
         $byBasename = $this->buildBasenameIndex($index);
+        $kyzuCompactIndex = $source === 'kyzu' ? $this->buildKyzuCompactIndex($index) : [];
 
         $query = Channel::query()
             ->where('playlist_id', $playlistId)
@@ -303,7 +367,7 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
                 $logoUrl = $cache['matches'][$cacheKey] ?: null;
                 $cacheHits++;
             } else {
-                $logoUrl = $this->resolveLogoUrl($normalizedName, $countryCode, $countryFolder, $index, $byBasename);
+                $logoUrl = $this->resolveLogoUrl($normalizedName, $countryCode, $countryFolder, $index, $byBasename, $source, $kyzuCompactIndex);
                 $cache['matches'][$cacheKey] = $logoUrl ?? '';
                 $cacheChanged = true;
                 $cacheMisses++;
@@ -372,9 +436,14 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
      *
      * @param  array<string, true>  $index  Filename → true map; empty array triggers HEAD fallback.
      * @param  array<string, list<string>>  $byBasename  Pre-built basename lookup (built once per run).
+     * @param  array<string, list<string>>  $kyzuCompactIndex  Pre-built compact-basename lookup for the K-yzu/Logos source.
      */
-    private function resolveLogoUrl(string $channelName, string $countryCode, string $countryFolder, array $index, array $byBasename): ?string
+    private function resolveLogoUrl(string $channelName, string $countryCode, string $countryFolder, array $index, array $byBasename, string $source, array $kyzuCompactIndex): ?string
     {
+        if ($source === 'kyzu') {
+            return $index === [] ? null : $this->resolveKyzuLogoUrl($channelName, $countryFolder, $kyzuCompactIndex);
+        }
+
         $slugs = array_values(array_unique(array_filter([
             $this->slugify($channelName, false),
             $this->slugify($channelName, true),
@@ -401,7 +470,7 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
         foreach ($this->preferredQualityFolders($channelName) as $folder) {
             foreach ($filenames as $filename) {
                 $relativePath = $folder === '' ? $filename : "{$folder}/{$filename}";
-                $url = $this->cdnBase."/{$countryFolder}/{$relativePath}";
+                $url = $this->buildLogoUrl($countryFolder, $relativePath);
 
                 if ($this->urlExists($url)) {
                     return $url;
@@ -410,6 +479,102 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
         }
 
         return null;
+    }
+
+    /**
+     * Build the final CDN URL for a relative logo path, URL-encoding each path
+     * segment individually. K-yzu/Logos folder names contain characters (e.g. `:`)
+     * that are not valid unencoded in a URL path; tv-logo/tv-logos paths are already
+     * URL-safe, so encoding them is a no-op.
+     */
+    private function buildLogoUrl(string $countryFolder, string $relativePath): string
+    {
+        $fullPath = trim($countryFolder, '/').'/'.$relativePath;
+
+        return $this->cdnBase.'/'.implode('/', array_map('rawurlencode', explode('/', $fullPath)));
+    }
+
+    /**
+     * Resolve a logo URL against the K-yzu/Logos index.
+     *
+     * Unlike tv-logo/tv-logos, K-yzu filenames are human-readable channel names
+     * with no country-code suffix (e.g. "ABC HD.png"), so matching is done by
+     * comparing compact (hyphen-stripped) slugs rather than constructing candidate
+     * filenames.
+     *
+     * @param  array<string, list<string>>  $compactIndex  Pre-built compact-basename → paths map.
+     */
+    private function resolveKyzuLogoUrl(string $channelName, string $countryFolder, array $compactIndex): ?string
+    {
+        $keys = array_values(array_unique(array_filter([
+            str_replace('-', '', $this->slugify($channelName, true)),
+            str_replace('-', '', $this->slugify($channelName, false)),
+        ])));
+
+        if ($keys === []) {
+            return null;
+        }
+
+        $hdPreferred = (bool) preg_match('/\b(hd|fhd|uhd|4k|8k|1080[pi]|720p)\b/iu', $channelName);
+
+        foreach ($keys as $key) {
+            if (! isset($compactIndex[$key])) {
+                continue;
+            }
+
+            $paths = $compactIndex[$key];
+
+            if (count($paths) === 1) {
+                return $this->buildLogoUrl($countryFolder, $paths[0]);
+            }
+
+            // Prefer root-level files over nested affiliate/variant subfolders.
+            $rootPaths = array_values(array_filter($paths, fn (string $p): bool => ! str_contains($p, '/')));
+            $candidates = $rootPaths !== [] ? $rootPaths : $paths;
+
+            foreach ($candidates as $path) {
+                $isHd = (bool) preg_match('/\bhd\b/i', pathinfo($path, PATHINFO_FILENAME));
+
+                if ($isHd === $hdPreferred) {
+                    return $this->buildLogoUrl($countryFolder, $path);
+                }
+            }
+
+            return $this->buildLogoUrl($countryFolder, $candidates[0]);
+        }
+
+        return null;
+    }
+
+    /**
+     * Build a compact-basename (extension stripped, hyphens removed) → [relativePaths…]
+     * lookup from the K-yzu/Logos index, so channel names can be matched against
+     * filenames without a shared country-code/quality-suffix convention.
+     *
+     * @param  array<string, true>  $index
+     * @return array<string, list<string>>
+     */
+    private function buildKyzuCompactIndex(array $index): array
+    {
+        $map = [];
+
+        foreach ($index as $relativePath => $_) {
+            $stem = pathinfo($relativePath, PATHINFO_FILENAME);
+
+            foreach ([true, false] as $stripQualityTags) {
+                $key = str_replace('-', '', $this->slugify($stem, $stripQualityTags));
+
+                if ($key !== '') {
+                    $map[$key][] = $relativePath;
+                }
+            }
+        }
+
+        foreach ($map as $key => $paths) {
+            $map[$key] = array_values(array_unique($paths));
+        }
+
+        return $map;
     }
 
     /**
@@ -459,7 +624,7 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
 
             // Single match - return immediately.
             if (count($paths) === 1) {
-                return $this->cdnBase."/{$countryFolder}/{$paths[0]}";
+                return $this->buildLogoUrl($countryFolder, $paths[0]);
             }
 
             // Multiple matches - pick the best based on quality preference.
@@ -477,14 +642,14 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
             }
 
             if ($hdPreferred && $hdMatch !== null) {
-                return $this->cdnBase."/{$countryFolder}/{$hdMatch}";
+                return $this->buildLogoUrl($countryFolder, $hdMatch);
             }
 
             if ($rootMatch !== null) {
-                return $this->cdnBase."/{$countryFolder}/{$rootMatch}";
+                return $this->buildLogoUrl($countryFolder, $rootMatch);
             }
 
-            return $this->cdnBase."/{$countryFolder}/{$paths[0]}";
+            return $this->buildLogoUrl($countryFolder, $paths[0]);
         }
 
         return null;
@@ -576,11 +741,11 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
                     foreach ($channelSlugs as $channelCandidate) {
                         foreach ($indexCandidates as $indexCandidate) {
                             if ($indexCandidate === $channelCandidate) {
-                                return $this->cdnBase."/{$countryFolder}/{$relativePath}";
+                                return $this->buildLogoUrl($countryFolder, $relativePath);
                             }
 
                             if ($this->isSafeCompactSuffixMatch($indexCandidate, $channelCandidate)) {
-                                return $this->cdnBase."/{$countryFolder}/{$relativePath}";
+                                return $this->buildLogoUrl($countryFolder, $relativePath);
                             }
                         }
                     }
@@ -692,19 +857,22 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
     }
 
     /**
-     * Recursively collect PNG logo files from a country folder and its subfolders.
+     * Recursively collect indexable logo files (per $indexExtensions) from a
+     * country folder and its subfolders.
      *
      * @return array<string, true>
      */
     private function collectPngIndexEntries(string $path, string $prefix = ''): array
     {
         try {
+            $requestPath = implode('/', array_map('rawurlencode', explode('/', $path)));
+
             $response = Http::timeout(15)
                 ->withHeaders([
                     'Accept' => 'application/vnd.github.v3+json',
                     'User-Agent' => 'tv-logos-plugin/1.0',
                 ])
-                ->get($this->indexApiBase.'/'.$path);
+                ->get($this->indexApiBase.'/'.$requestPath);
 
             if (! $response->successful()) {
                 return [];
@@ -719,8 +887,9 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
 
                 $type = (string) ($item['type'] ?? '');
                 $name = (string) ($item['name'] ?? '');
+                $extension = strtolower(pathinfo($name, PATHINFO_EXTENSION));
 
-                if ($type === 'file' && str_ends_with($name, '.png')) {
+                if ($type === 'file' && in_array($extension, $this->indexExtensions, true)) {
                     $entries[strtolower($prefix.$name)] = true;
 
                     continue;
